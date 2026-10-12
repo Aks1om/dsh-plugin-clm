@@ -2,7 +2,7 @@
     - id: dsh-plugin-clm
       name: 'dsh-plugin-clm'
       config:
-        defaultEnabled: false
+        defaultEnabled: true
         budgetTokens: 64000
         reserveTokens: 4096
         mirrorFilename: "LIVE_CONTEXT.md"
