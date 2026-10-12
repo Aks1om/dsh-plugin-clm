@@ -325,12 +325,6 @@ export function apply(ctx, config = {}) {
 
       if (/^\s*\/clm\s+(on|enable)/i.test(userText) || /\b(activar?|encender?)\s+clm\b/i.test(userText)) {
         setSessionEnabled(sessionId, true);
-        if (typeof lastUserMsg.content === 'string') {
-          lastUserMsg.content = lastUserMsg.content.replace(/^\s*\/clm\s+(on|enable)\s*\n?/i, '').trim();
-          if (!lastUserMsg.content) {
-            lastUserMsg.content = '¿Está activo el Context Language Model (CLM) y cómo puedo usar mi archivo LIVE_CONTEXT.md?';
-          }
-        }
       } else if (/^\s*\/clm\s+(off|disable)/i.test(userText) || /\b(desactivar?|apagar?)\s+clm\b/i.test(userText)) {
         setSessionEnabled(sessionId, false);
       }
