@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-clm",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Context Language Models (CLM) for DeepSeek Harness: Active editable context window mirrored to disk for pruning and token optimization.",
   "type": "module",
   "main": "./index.js",
