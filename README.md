@@ -1,6 +1,6 @@
 # 🧠 dsh-plugin-clm (Context Language Models for DeepSeek Harness)
 
-> **Active editable context window mirrored to disk for DeepSeek Harness (DSH).**
+> **Active editable context window mirrored to disk for DeepSeek Harness (DSH).**  
 > Inspired by Meta CLM (*Context Language Models*) & `pi-clm`.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
@@ -8,41 +8,34 @@
 
 ---
 
-## 🇪🇸 Descripción en Español
+## Overview
 
-**`dsh-plugin-clm`** transforma la ventana de contexto estática y puramente acumulativa de DeepSeek Harness en un **documento de contexto vivo y editable en disco** (`.dsh/clm/LIVE_CONTEXT.md`).
+**`dsh-plugin-clm`** transforms the conventional monolithic, append-only context window of DeepSeek Harness into an **active, disk-mirrored, and editable context document** (`.dsh/clm/LIVE_CONTEXT.md`).
 
-En las interacciones tradicionales con LLMs, el historial de conversación crece sin control, acumulando volcados gigantescos de terminal, salidas de búsqueda obsoletas y caminos sin salida que desperdician tokens y degradan el razonamiento del modelo. Con CLM, el agente y el usuario pueden podar, resumir y mantener activamente el contexto de la conversación.
+In standard LLM conversational loops, the chat history grows indefinitely, accumulating bloated tool dumps, stale search outputs, and abandoned debugging attempts. This consumes thousands of tokens and degrades model reasoning over long conversations.
 
-### ✨ Características Principales
-- 🔄 **Sincronización Bidireccional en Tiempo Real**: Refleja la memoria activa del turno en `.dsh/clm/LIVE_CONTEXT.md`.
-- ✂️ **Poda Activa de Contexto**: El modelo puede comprimir salidas extensas de herramientas (`pwsh`, `curl`, `grep`) en notas compactas de 1 o 2 líneas.
-- 🎛️ **Toggle Interactivo en la Interfaz Web**: Botón `[ 🧠 CLM ON 🟢 / CLM OFF ⚪ ]` directamente integrado en la barra de herramientas del chat, junto a los permisos y el modo Plan.
-- 🛡️ **Overflow Guard**: Previene desbordes accidentales de la ventana de contexto asegurando un presupuesto estricto de tokens (`budgetTokens: 64000`, `reserveTokens: 4096`).
-- ⚡ **Persistencia por Conversación**: Recuerda el estado encendido/apagado para cada sesión de chat individualmente.
+With CLM active, the agent and user can actively **prune, compress, and curate** the live conversational state on disk before each generation step.
 
 ---
 
-## 🇬🇧 English Description
+## ✨ Key Features
 
-**`dsh-plugin-clm`** brings Meta's **Context Language Models (CLM)** paradigm to DeepSeek Harness. Instead of an append-only monolithic context, your conversation history is mirrored into a structured, editable Markdown file (`.dsh/clm/LIVE_CONTEXT.md`).
-
-### ✨ Key Highlights
-- 🔄 **Live Disk Mirror**: The conversation context is projected into an editable document before each generation turn.
-- ✂️ **Active Pruning**: Both user and agent can prune bloated tool outputs, dead ends, or add persistent project notes.
-- 🎛️ **Native UI Toggle**: Integrated status chip `[ 🧠 CLM ON / OFF ]` right in the conversation composer bar.
-- 🛡️ **Overflow Guard**: Automatic safeguard to keep generation within token budgets.
+- 🔄 **Real-Time Context Synchronization**: Mirrors the ongoing session context into a structured Markdown document (`.dsh/clm/LIVE_CONTEXT.md`).
+- ✂️ **Active Context Pruning**: Enables the model to compress extensive terminal dumps and tool results into concise summary notes.
+- 🎛️ **Native UI Control**: Seamlessly integrated `[ 🧠 CLM ON 🟢 / CLM OFF ⚪ ]` toggle button in the chat input bar, operating cleanly in the background.
+- 🛡️ **Token Overflow Guard**: Automatically enforces context budgets (`budgetTokens: 64000`, `reserveTokens: 4096`) to prevent sudden context overruns.
+- ⚡ **Per-Session State Persistence**: Remembers enabled/disabled state across app reloads and per conversation.
 
 ---
 
-## 🚀 Instalación / Installation
+## 🚀 Installation
 
-### En tu perfil de DeepSeek Harness (`~/.dsh/profiles/desktop/package.json`):
+### In your DeepSeek Harness desktop profile (`~/.dsh/profiles/desktop/package.json`):
 
 ```json
 {
   "dependencies": {
-    "dsh-plugin-clm": "^1.0.0"
+    "dsh-plugin-clm": "^1.0.2"
   },
   "dsh": {
     "profile": {
@@ -54,44 +47,44 @@ En las interacciones tradicionales con LLMs, el historial de conversación crece
 }
 ```
 
-O instala directamente vía CLI:
+Or install via CLI:
 ```bash
 dsh plugin add dsh-plugin-clm
 ```
 
 ---
 
-## 🛠️ Comandos Slash / Slash Commands
+## 🛠️ Slash Commands
 
-| Comando | Acción |
+| Command | Description |
 |---|---|
-| `/clm on` | Activa la memoria viva editable en la conversación actual |
-| `/clm off` | Desactiva CLM y regresa al flujo acumulativo tradicional |
-| `/clm status` | Muestra el tamaño estimado en tokens y la revisión del espejo |
-| `/clm reset` | Reinicia y regenera el archivo `LIVE_CONTEXT.md` limpio |
+| `/clm on` | Enables active editable context mirroring for the current session |
+| `/clm off` | Disables CLM mode and falls back to standard append-only context |
+| `/clm status` | Displays estimated context tokens, revisions, and mirror file path |
+| `/clm reset` | Clears and regenerates a clean mirror state for the session |
 
 ---
 
-## 📄 Estructura del Archivo Espejo (`LIVE_CONTEXT.md`)
+## 📄 Mirror Document Structure (`LIVE_CONTEXT.md`)
 
 ```markdown
-# CONTEXT LANGUAGE MODEL (CLM) - MEMORIA VIVA EDITABLE
+# CONTEXT LANGUAGE MODEL (CLM) - ACTIVE MIRROR
 
 [[CTX_NOTES]]
-- Objetivo: Refactorizar arquitectura de autenticación.
-- Decisiones: Mantener tokens JWT en memoria protegida.
+- Objective: Refactor authentication architecture.
+- Decisions: Retain JWT tokens in protected in-memory store.
 
 [[CTX_TURN document=sess-1 index=1 role=user]]
-Hola, ayúdame a revisar los logs del servidor.
+Check the server logs for recent authentication errors.
 
 [[CTX_TURN document=sess-1 index=2 role=assistant]]
-Analizando registros:
-[Salida de logs comprimida a los 3 errores críticos detectados]
+Examining logs:
+[Tool output summarized to the 3 relevant failure entries]
 ```
 
 ---
 
-## 👤 Autor & Licencia
+## 👤 Author & License
 
-Desarrollado por **Maximiliano Roldán** ([@maxeone](https://github.com/maxeone)).  
-Distribuido bajo licencia **MIT**.
+Developed by **Maximiliano Roldán** ([@maxeone](https://github.com/maxeone)).  
+Distributed under the **MIT License**.

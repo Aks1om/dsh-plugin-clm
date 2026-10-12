@@ -23,7 +23,7 @@
   },
   "meta": {
     "title": "Context Language Models (CLM)",
-    "description": "Gestión activa de contexto estilo Meta CLM / pi-clm: el contexto vivo se refleja en un archivo editable que el modelo poda y mantiene, con activación/desactivación por conversación."
+    "description": "Active context management inspired by Meta CLM / pi-clm: live context is mirrored to an editable disk file that the model prunes and maintains, with per-conversation toggle."
   },
   "keywords": [
     "deepseek-harness",
