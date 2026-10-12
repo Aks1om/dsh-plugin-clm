@@ -1,0 +1,56 @@
+{
+  "name": "dsh-plugin-clm",
+  "version": "1.0.0",
+  "description": "Context Language Models (CLM) for DeepSeek Harness: Active editable context window mirrored to disk for pruning and token optimization.",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "package.json",
+    "README.md",
+    "LICENSE",
+    "lib/"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "slots"
+      ]
+    }
+  },
+  "meta": {
+    "title": "Context Language Models (CLM)",
+    "description": "Gestión activa de contexto estilo Meta CLM / pi-clm: el contexto vivo se refleja en un archivo editable que el modelo poda y mantiene, con activación/desactivación por conversación."
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "clm",
+    "context-language-model",
+    "meta-clm",
+    "context-window",
+    "memory",
+    "token-optimization"
+  ],
+  "author": "Maximiliano Roldán <138690025+maxeone@users.noreply.github.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maxeone/dsh-plugin-clm.git"
+  },
+  "bugs": {
+    "url": "https://github.com/maxeone/dsh-plugin-clm/issues"
+  },
+  "homepage": "https://github.com/maxeone/dsh-plugin-clm#readme"
+}

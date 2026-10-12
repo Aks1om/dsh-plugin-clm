@@ -1,0 +1,8 @@
+- insert:
+    - id: dsh-plugin-clm
+      name: '@local/dsh-plugin-clm'
+      config:
+        defaultEnabled: false
+        budgetTokens: 64000
+        reserveTokens: 4096
+        mirrorFilename: "LIVE_CONTEXT.md"
