@@ -1,6 +1,6 @@
 - insert:
     - id: dsh-plugin-clm
-      name: '@local/dsh-plugin-clm'
+      name: 'dsh-plugin-clm'
       config:
         defaultEnabled: false
         budgetTokens: 64000
