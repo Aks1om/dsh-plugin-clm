@@ -11,12 +11,6 @@ import {
 import { estimateTotalTokens, estimateMessageTokens } from './lib/overflow-guard.js';
 import { buildClmPromptSection } from './lib/steering-prompt.js';
 
-export const name = 'dsh-plugin-clm';
-export const inject = ['agents', 'sessions', 'tools', 'systemPrompt'];
-
-/**
- * Validador compatible con @standard-schema/spec requerido por @deepseek-ai/cordis.
- */
 export const Config = {
   '~standard': {
     version: 1,
@@ -77,8 +71,18 @@ function setSessionFlag(sessionId, enabled, workspaceRoot = process.cwd()) {
   } catch {}
 }
 
+/**
+ * Identifica si una sesión es un subagente, teammate secundario o tarea en background.
+ * Los subagentes no deben operar CLM ni pisar los espejos de la conversación principal.
+ */
 function isSubagentSession(session) {
-  return session?.header?.origin === 'subagent';
+  if (!session) return true;
+  if (session.header?.origin === 'subagent' || session.origin === 'subagent') return true;
+  if (session.header?.parentSession || session.parentSession || session.header?.parentSessionId || session.parentSessionId) return true;
+  if (typeof session.header?.delegationDepth === 'number' && session.header.delegationDepth > 0) return true;
+  if (typeof session.delegationDepth === 'number' && session.delegationDepth > 0) return true;
+  if (session.header?.agentPreset && session.header.agentPreset !== 'lead') return true;
+  return false;
 }
 
 export function apply(ctx, config = {}) {
@@ -101,6 +105,7 @@ export function apply(ctx, config = {}) {
       const isEnabled = flagVal !== null ? flagVal : defaultEnabled;
       let initialNotes = '';
       try {
+        // Aislamiento estricto: sólo leer notas iniciales si el archivo privado de ESTA sesión existe
         if (existsSync(store.filePath)) {
           const existingDisk = readFileSync(store.filePath, 'utf8');
           initialNotes = extractNotesFromDocument(existingDisk) || '';
@@ -151,6 +156,7 @@ export function apply(ctx, config = {}) {
       state.snapshot = renderContextDocument(allMessages, {
         revision: state.revision,
         documentSeed: session.id,
+        sessionId: session.id,
         persistentNotes: state.persistentNotes,
       });
       await state.store.write(state.snapshot.text);
@@ -160,31 +166,29 @@ export function apply(ctx, config = {}) {
     return state;
   }
 
-  function setSessionEnabled(sessionId, enabled, session = null) {
-    const workspaceRoot = getWorkspaceRoot(session);
+  function setSessionEnabled(sessionId, enabled, session) {
+    const workspaceRoot = session ? getWorkspaceRoot(session) : process.cwd();
     const state = getSessionState(sessionId, workspaceRoot);
-    state.enabled = Boolean(enabled);
-    setSessionFlag(sessionId, state.enabled, workspaceRoot);
-    if (state.enabled) {
-      if (session) {
-        syncMirrorForSession(session).catch(() => {});
-      } else {
-        state.store.read().then((content) => {
-          if (!content) {
-            const initialNotes = `## [CLM Tracker - Estado de la Sesión]\n- Sesión: ${sessionId}\n- Modo CLM: Activo`;
-            state.persistentNotes = initialNotes;
-            const doc = renderContextDocument([], {
-              revision: state.revision,
-              documentSeed: sessionId,
-              persistentNotes: initialNotes,
-            });
-            state.snapshot = doc;
-            state.store.write(doc.text).catch(() => {});
-          }
-        }).catch(() => {});
-      }
+    state.enabled = enabled;
+    setSessionFlag(sessionId, enabled, workspaceRoot);
+    if (enabled && session) {
+      syncMirrorForSession(session).catch(() => {});
+    } else {
+      state.store.read().then((content) => {
+        if (!content) {
+          const initialNotes = `## [CLM Tracker - Estado de la Sesión]\n- Sesión: ${sessionId}\n- Modo CLM: Activo`;
+          state.persistentNotes = initialNotes;
+          const doc = renderContextDocument([], {
+            revision: state.revision,
+            documentSeed: sessionId,
+            sessionId,
+            persistentNotes: initialNotes,
+          });
+          state.snapshot = doc;
+          state.store.write(doc.text).catch(() => {});
+        }
+      }).catch(() => {});
     }
-    return state;
   }
 
   /**
@@ -275,21 +279,18 @@ export function apply(ctx, config = {}) {
     });
   }
 
-  // 2. Registro de herramienta nativa `clm` con schema y output válidos para @deepseek-ai/dsh-tools
+  // 2. Registro de herramienta nativa `clm` con schema
   if (ctx.tools?.register) {
     ctx.tools.register({
       name: 'clm',
-      description:
-        'Controla Context Language Model (CLM) en la conversación actual. Permite encender (enable), apagar (disable), alternar (toggle), consultar el estado (status) o reiniciar (reset) la memoria viva editable en .dsh/clm/LIVE_CONTEXT.md.',
+      description: 'Controla Context Language Model (CLM) en la conversación actual. Permite encender (enable), apagar (disable), alternar (toggle), consultar el estado (status) o reiniciar (reset) la memoria viva editable.',
       parameters: {
         type: 'object',
-        additionalProperties: false,
         properties: {
           action: {
             type: 'string',
             enum: ['enable', 'disable', 'toggle', 'status', 'reset'],
-            description:
-              "Acción a realizar: 'enable' para encender, 'disable' para apagar, 'toggle' para alternar, 'status' para consultar estado actual, 'reset' para reiniciar el espejo.",
+            description: "Acción a realizar: 'enable' para encender, 'disable' para apagar, 'toggle' para alternar, 'status' para consultar estado actual, 'reset' para reiniciar el espejo.",
           },
         },
         required: ['action'],
@@ -297,46 +298,42 @@ export function apply(ctx, config = {}) {
       output: {
         schema: {
           type: 'object',
-          additionalProperties: false,
           properties: {
             status: { type: 'string' },
             enabled: { type: 'boolean' },
             sessionId: { type: 'string' },
             mirrorPath: { type: 'string' },
-            revision: { type: 'integer' },
-            acceptedEdits: { type: 'integer' },
-            estimatedTokens: { type: 'integer' },
-            budgetTokens: { type: 'integer' },
+            globalMirrorPath: { type: 'string' },
+            revision: { type: 'number' },
             message: { type: 'string' },
           },
-          required: ['status', 'message'],
         },
-        render: (_args, value) => [
-          {
+        render: (output) => {
+          if (!output) return null;
+          return {
             type: 'text',
-            text: value.message,
-          },
-        ],
+            text: output.message || `CLM ${output.status}: ${output.mirrorPath}`,
+          };
+        },
       },
-      execute: async ({ action }, execCtx) => {
-        const session = execCtx?.agent?.session;
-        const sessionId = session?.id || execCtx?.sessionId || 'default';
-        const workspaceRoot = getWorkspaceRoot(session);
+      handler: async ({ action }, toolCtx) => {
+        const session = toolCtx?.agent?.session;
+        const sessionId = session?.id || 'default';
+        const workspaceRoot = session ? getWorkspaceRoot(session) : process.cwd();
         const state = getSessionState(sessionId, workspaceRoot);
 
         switch (action) {
           case 'enable': {
             setSessionEnabled(sessionId, true, session);
-            await syncMirrorForSession(session);
+            if (session) await syncMirrorForSession(session);
             return {
               status: 'enabled',
               enabled: true,
               sessionId,
               mirrorPath: state.store.filePath,
+              globalMirrorPath: state.store.globalPath,
               revision: state.revision,
-              acceptedEdits: state.editsCount,
-              budgetTokens,
-              message: `✅ CLM ACTIVADO para esta conversación. El archivo espejo está sincronizado en: ${state.store.filePath}`,
+              message: `✅ CLM ACTIVADO para esta conversación.\nArchivo privado: ${state.store.filePath}\nVista global: ${state.store.globalPath || state.store.filePath}`,
             };
           }
           case 'disable': {
@@ -346,21 +343,23 @@ export function apply(ctx, config = {}) {
               enabled: false,
               sessionId,
               mirrorPath: state.store.filePath,
+              globalMirrorPath: state.store.globalPath,
               message: '⛔ CLM DESACTIVADO para esta conversación. El flujo de contexto vuelve a ser acumulativo normal.',
             };
           }
           case 'toggle': {
             const nextState = !state.enabled;
             setSessionEnabled(sessionId, nextState, session);
-            if (nextState) await syncMirrorForSession(session);
+            if (nextState && session) await syncMirrorForSession(session);
             return {
               status: nextState ? 'enabled' : 'disabled',
               enabled: nextState,
               sessionId,
               mirrorPath: state.store.filePath,
+              globalMirrorPath: state.store.globalPath,
               message: nextState
-                ? `✅ CLM ACTIVADO para esta conversación (${state.store.filePath})`
-                : '⛔ CLM DESACTIVADO para esta conversación.',
+                ? `✅ CLM ACTIVADO.\nArchivo privado: ${state.store.filePath}`
+                : '⛔ CLM DESACTIVADO.',
             };
           }
           case 'reset': {
@@ -368,31 +367,31 @@ export function apply(ctx, config = {}) {
             state.revision = 0;
             state.editsCount = 0;
             state.notesDelivered = false;
-            await syncMirrorForSession(session);
+            if (session) await syncMirrorForSession(session);
             return {
               status: state.enabled ? 'enabled' : 'disabled',
               enabled: state.enabled,
               sessionId,
               mirrorPath: state.store.filePath,
-              message: `🔄 Espejo de contexto regenerado para la sesión actual en: ${state.store.filePath}`,
+              globalMirrorPath: state.store.globalPath,
+              revision: 0,
+              message: `🔄 Espejo de CLM reiniciado y sincronizado con el historial limpio de la sesión (${state.store.filePath}).`,
             };
           }
           case 'status':
           default: {
-            await syncMirrorForSession(session);
-            const derived = typeof session?.deriveMessages === 'function' ? session.deriveMessages() : state.snapshot?.messages ?? [];
+            const derived = typeof session?.deriveMessages === 'function' ? session.deriveMessages() : [];
             const tokens = estimateTotalTokens(derived);
             return {
               status: state.enabled ? 'enabled' : 'disabled',
               enabled: state.enabled,
               sessionId,
               mirrorPath: state.store.filePath,
+              globalMirrorPath: state.store.globalPath,
               revision: state.revision,
-              acceptedEdits: state.editsCount,
-              estimatedTokens: tokens,
-              budgetTokens,
+              notesLength: state.persistentNotes?.length || 0,
               message: state.enabled
-                ? `✅ CLM ACTIVO [Sesión: ${sessionId} | Rev: ${state.revision} | Ediciones: ${state.editsCount} | ~${tokens} / ${budgetTokens} tokens]\nArchivo espejo: ${state.store.filePath}`
+                ? `✅ CLM ACTIVO en sesión ${sessionId} [Rev. ${state.revision} | ${state.editsCount} edits | ~${tokens} tokens]\nArchivo privado: ${state.store.filePath}\nVista activa global: ${state.store.globalPath || state.store.filePath}`
                 : '⛔ CLM INACTIVO en esta conversación (usa action: "enable" o /clm on para encenderlo).',
             };
           }
@@ -410,18 +409,18 @@ export function apply(ctx, config = {}) {
         hint: '[on|off|toggle|status|reset]',
       },
       handler: async ({ agent, rawInput }) => {
-        const arg = rawInput ? rawInput.trim().toLowerCase() : '';
         const session = agent?.session;
         const sessionId = session?.id || 'default';
-        const workspaceRoot = getWorkspaceRoot(session);
+        const workspaceRoot = session ? getWorkspaceRoot(session) : process.cwd();
         const state = getSessionState(sessionId, workspaceRoot);
+        const arg = (rawInput || '').trim().toLowerCase();
 
         if (arg === 'on' || arg === 'enable') {
           setSessionEnabled(sessionId, true, session);
-          await syncMirrorForSession(session);
+          if (session) await syncMirrorForSession(session);
           return {
             kind: 'success',
-            text: `✅ CLM ACTIVADO en esta conversación.\nArchivo espejo sincronizado: ${state.store.filePath}`,
+            text: `✅ CLM ACTIVADO en esta conversación.\nArchivo privado: ${state.store.filePath}\nVista global: ${state.store.globalPath || state.store.filePath}`,
           };
         }
         if (arg === 'off' || arg === 'disable') {
@@ -436,7 +435,7 @@ export function apply(ctx, config = {}) {
           state.revision = 0;
           state.editsCount = 0;
           state.notesDelivered = false;
-          await syncMirrorForSession(session);
+          if (session) await syncMirrorForSession(session);
           return {
             kind: 'success',
             text: `🔄 Espejo de CLM regenerado para la sesión actual (${state.store.filePath}).`,
@@ -445,11 +444,11 @@ export function apply(ctx, config = {}) {
         if (arg === 'toggle') {
           const next = !state.enabled;
           setSessionEnabled(sessionId, next, session);
-          if (next) await syncMirrorForSession(session);
+          if (next && session) await syncMirrorForSession(session);
           return {
             kind: 'success',
             text: next
-              ? `✅ CLM ACTIVADO en esta conversación.\nArchivo espejo: ${state.store.filePath}`
+              ? `✅ CLM ACTIVADO en esta conversación.\nArchivo privado: ${state.store.filePath}`
               : '⛔ CLM DESACTIVADO en esta conversación.',
           };
         }
@@ -457,30 +456,29 @@ export function apply(ctx, config = {}) {
         // Por defecto (/clm o /clm status): si estaba inactivo y llaman /clm sin args, activarlo; si piden status, mostrar métricas
         if (arg === '' && !state.enabled) {
           setSessionEnabled(sessionId, true, session);
-          await syncMirrorForSession(session);
+          if (session) await syncMirrorForSession(session);
           return {
             kind: 'success',
-            text: `✅ CLM ACTIVADO en esta conversación.\nArchivo espejo: ${state.store.filePath}`,
+            text: `✅ CLM ACTIVADO en esta conversación.\nArchivo privado: ${state.store.filePath}`,
           };
         }
 
-        await syncMirrorForSession(session);
-        const derived = typeof session?.deriveMessages === 'function' ? session.deriveMessages() : state.snapshot?.messages ?? [];
+        const derived = typeof session?.deriveMessages === 'function' ? session.deriveMessages() : [];
         const tokens = estimateTotalTokens(derived);
         return {
           kind: 'success',
           text: state.enabled
-            ? `✅ [CLM ACTIVO] Revisión: ${state.revision} | Ediciones aplicadas: ${state.editsCount} | ~${tokens} / ${budgetTokens} tokens.\nEspejo en vivo: ${state.store.filePath}`
+            ? `🧠 [CLM ACTIVO] Sesión: ${sessionId} | Rev. ${state.revision} | Ediciones aplicadas: ${state.editsCount} | ~${tokens} / ${budgetTokens} tokens.\nArchivo privado: ${state.store.filePath}\nVista global: ${state.store.globalPath || state.store.filePath}`
             : '⛔ [CLM INACTIVO] Usa /clm on o el botón CLM de la barra para activarlo.',
         };
       },
     });
   };
 
-  if (ctx.commands?.register) {
-    registerClmCommand(ctx);
-  } else if (ctx.inject) {
+  if (typeof ctx.inject === 'function') {
     ctx.inject(['commands'], (cmdCtx) => registerClmCommand(cmdCtx));
+  } else if (ctx.get?.('commands')?.register) {
+    registerClmCommand(ctx);
   }
 
   // 4. Inicialización al crear un agente y sincronización inicial del espejo
@@ -523,7 +521,7 @@ export function apply(ctx, config = {}) {
       try {
         const additions = [];
 
-        // A. Detectar ediciones externas o del agente sobre LIVE_CONTEXT.md
+        // A. Detectar ediciones externas o del agente sobre el archivo privado o LIVE_CONTEXT.md
         const changedOnDisk = await state.store.hasChanged();
         const diskContent = await state.store.read();
 
@@ -550,7 +548,7 @@ export function apply(ctx, config = {}) {
               state.notesDelivered = true;
             }
           } else if (!state.notesDelivered && state.persistentNotes) {
-            // Entregar el bloque de notas vivas de LIVE_CONTEXT.md al iniciar la conversación
+            // Entregar el bloque de notas vivas al iniciar la conversación
             additions.push(
               createClmMessage(
                 `[Memoria Viva CLM cargada desde ${state.store.filePath}]\n${state.persistentNotes}`,
@@ -567,7 +565,7 @@ export function apply(ctx, config = {}) {
           state.revision++;
         }
 
-        // C. Sincronizar el archivo LIVE_CONTEXT.md con los mensajes actuales de la sesión
+        // C. Sincronizar el archivo privado y espejo global con los mensajes actuales de la sesión
         const finalMessages = additions.length > 0 ? [...decision.messages, ...additions] : decision.messages;
         await syncMirrorForSession(session, finalMessages);
 
@@ -594,7 +592,7 @@ export function apply(ctx, config = {}) {
     }
   });
 
-  // 7. Limpiar solo la referencia en memoria al cerrar sesión (NUNCA borrar LIVE_CONTEXT.md del disco)
+  // 7. Limpiar la referencia en memoria y archivo temporal al cerrar sesión
   ctx.on('session/disposed', (session) => {
     const sessionId = session?.id || session;
     sessionStates.delete(sessionId);
