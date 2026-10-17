@@ -11,6 +11,8 @@ import {
 import { estimateTotalTokens, estimateMessageTokens } from './lib/overflow-guard.js';
 import { buildClmPromptSection } from './lib/steering-prompt.js';
 
+export const name = 'dsh-plugin-clm';
+
 export const Config = {
   '~standard': {
     version: 1,
@@ -259,9 +261,12 @@ export function apply(ctx, config = {}) {
     return prunedCount;
   }
 
-  // 1. Contribución dinámica al Runtime Context del System Prompt
-  if (ctx.systemPrompt?.context) {
-    ctx.systemPrompt.context({
+  // 1. Contribución dinámica al Runtime Context del System Prompt.
+  //    `systemPrompt` es un servicio de Cordis: debe accederse vía ctx.inject
+  //    (o ctx.get como fallback), nunca como propiedad directa del contexto.
+  const registerClmSystemPromptContext = (spCtx) => {
+    if (!spCtx?.systemPrompt?.context) return;
+    spCtx.systemPrompt.context({
       name: 'clm:steering',
       order: 200,
       text: (assemblyCtx) => {
@@ -277,11 +282,19 @@ export function apply(ctx, config = {}) {
         }).trim();
       },
     });
+  };
+
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['systemPrompt'], (spCtx) => registerClmSystemPromptContext(spCtx));
+  } else {
+    registerClmSystemPromptContext({ systemPrompt: ctx.get?.('systemPrompt') });
   }
 
-  // 2. Registro de herramienta nativa `clm` con schema
-  if (ctx.tools?.register) {
-    ctx.tools.register({
+  // 2. Registro de herramienta nativa `clm` con schema.
+  //    `tools` es un servicio de Cordis: mismo patrón que systemPrompt.
+  const registerClmTool = (toolsCtx) => {
+    if (!toolsCtx?.tools?.register) return;
+    toolsCtx.tools.register({
       name: 'clm',
       description: 'Controla Context Language Model (CLM) en la conversación actual. Permite encender (enable), apagar (disable), alternar (toggle), consultar el estado (status) o reiniciar (reset) la memoria viva editable.',
       parameters: {
@@ -398,6 +411,12 @@ export function apply(ctx, config = {}) {
         }
       },
     });
+  };
+
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['tools'], (toolsCtx) => registerClmTool(toolsCtx));
+  } else {
+    registerClmTool({ tools: ctx.get?.('tools') });
   }
 
   // 3. Registro del comando slash /clm (con kind: 'success' compatible con @deepseek-ai/dsh-commands)
