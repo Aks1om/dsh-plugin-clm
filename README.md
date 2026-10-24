@@ -10,11 +10,13 @@
 
 ## Overview
 
-**`dsh-plugin-clm`** transforms the conventional monolithic, append-only context window of DeepSeek Harness into an **active, disk-mirrored, and editable context document** (`.dsh/clm/LIVE_CONTEXT.md`).
+**`dsh-plugin-clm`** mirrors the active DSH context into an editable per-session document (`.dsh/clm/LIVE_CONTEXT.md`). Validated edits are committed as DSH surface replacements, so the model sees a curated projection while the original append-only session events remain intact.
 
 In standard LLM conversational loops, the chat history grows indefinitely, accumulating bloated tool dumps, stale search outputs, and abandoned debugging attempts. This consumes thousands of tokens and degrades model reasoning over long conversations.
 
-With CLM active, the agent and user can actively **prune, compress, and curate** the live conversational state on disk before each generation step.
+With CLM active, the agent and user can actively **prune, compress, and curate** the live conversational state on disk before each generation step. System/developer messages and the recent conversation tail are protected from mirror edits. Stale, duplicate, cross-session, or protected-block edits are rejected.
+
+Supported runtime: `@deepseek-ai/dsh >=0.2.1-rc.2 <0.2.2`.
 
 ---
 
@@ -22,7 +24,7 @@ With CLM active, the agent and user can actively **prune, compress, and curate**
 
 - 🔄 **Real-Time Context Synchronization**: Mirrors the ongoing session context into a structured Markdown document (`.dsh/clm/LIVE_CONTEXT.md`).
 - ✂️ **Active Context Pruning**: Enables the model to compress extensive terminal dumps and tool results into concise summary notes.
-- 🎛️ **Native UI Control**: Seamlessly integrated `[ 🧠 CLM ON 🟢 / CLM OFF ⚪ ]` toggle button in the chat input bar, operating cleanly in the background.
+- 🎛️ **Session controls**: `/clm on`, `/clm off`, `/clm status`, `/clm reset`, and the `clm` tool.
 - 🛡️ **Token Overflow Guard**: Automatically enforces context budgets (`budgetTokens: 64000`, `reserveTokens: 4096`) to prevent sudden context overruns.
 - ⚡ **Per-Session State Persistence**: Remembers enabled/disabled state across app reloads and per conversation.
 
@@ -30,27 +32,14 @@ With CLM active, the agent and user can actively **prune, compress, and curate**
 
 ## 🚀 Installation
 
-### In your DeepSeek Harness desktop profile (`~/.dsh/profiles/desktop/package.json`):
+The project is maintained from the [Aks1om fork](https://github.com/Aks1om/dsh-plugin-clm) and is not currently published to npm. Clone it, then add the local package to the target DSH profile:
 
-```json
-{
-  "dependencies": {
-    "dsh-plugin-clm": "^1.0.2"
-  },
-  "dsh": {
-    "profile": {
-      "bundles": [
-        "dsh-plugin-clm"
-      ]
-    }
-  }
-}
-```
-
-Or install via CLI:
 ```bash
-dsh plugin add dsh-plugin-clm
+git clone https://github.com/Aks1om/dsh-plugin-clm.git
+dsh plugin --profile <profile-name> add ./dsh-plugin-clm
 ```
+
+The package's `cordis.patch.yml` registers the server plugin and its default configuration. It targets DSH `0.2.1-rc.2` and the `0.2.1` line only.
 
 ---
 
@@ -68,16 +57,17 @@ dsh plugin add dsh-plugin-clm
 ## 📄 Mirror Document Structure (`LIVE_CONTEXT.md`)
 
 ```markdown
-# CONTEXT LANGUAGE MODEL (CLM) - ACTIVE MIRROR
+[[LIVE_CONTEXT version=1 revision=0 document=<digest> baseline=<digest> session=<session-id>]]
+# Context Language Model (CLM) Active Mirror
 
-[[CTX_NOTES]]
-- Objective: Refactor authentication architecture.
-- Decisions: Retain JWT tokens in protected in-memory store.
+[[CTX_TURN document=<digest> index=1 role=notes id=1-system-notes protected=false]]
+Objective: Refactor authentication architecture.
+Decision: Retain JWT tokens in the protected in-memory store.
 
-[[CTX_TURN document=sess-1 index=1 role=user]]
+[[CTX_TURN document=<digest> index=2 role=user id=2-<message-digest> protected=false]]
 Check the server logs for recent authentication errors.
 
-[[CTX_TURN document=sess-1 index=2 role=assistant]]
+[[CTX_TURN document=<digest> index=3 role=assistant id=3-<message-digest> protected=true]]
 Examining logs:
 [Tool output summarized to the 3 relevant failure entries]
 ```
@@ -86,5 +76,6 @@ Examining logs:
 
 ## 👤 Author & License
 
-Developed by **Maximiliano Roldán** ([@maxeone](https://github.com/maxeone)).  
-Distributed under the **MIT License**.
+- Original author: **Maximiliano Roldán** ([@maxeone](https://github.com/maxeone)).
+- DSH 0.2 maintenance: **Aks1om** ([fork](https://github.com/Aks1om/dsh-plugin-clm)).
+- License: **MIT**.

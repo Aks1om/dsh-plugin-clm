@@ -6,8 +6,10 @@ import {
   applyContextDocument,
   extractNotesFromDocument,
   createClmMessage,
+  parseHeader,
   textFromContent,
 } from './lib/context-document.js';
+import { applyContextProjection, protectedContextIndexes, visibleContextMessages } from './lib/context-projection.js';
 import { estimateTotalTokens, estimateMessageTokens } from './lib/overflow-guard.js';
 import { buildClmPromptSection } from './lib/steering-prompt.js';
 
@@ -24,6 +26,7 @@ export const Config = {
           defaultEnabled: typeof raw.defaultEnabled === 'boolean' ? raw.defaultEnabled : true,
           budgetTokens: typeof raw.budgetTokens === 'number' && raw.budgetTokens > 0 ? raw.budgetTokens : 64000,
           reserveTokens: typeof raw.reserveTokens === 'number' && raw.reserveTokens >= 0 ? raw.reserveTokens : 4096,
+          retainTailMessages: Number.isSafeInteger(raw.retainTailMessages) && raw.retainTailMessages >= 1 ? raw.retainTailMessages : 4,
           mirrorFilename: typeof raw.mirrorFilename === 'string' && raw.mirrorFilename.trim() ? raw.mirrorFilename.trim() : 'LIVE_CONTEXT.md',
         },
       };
@@ -83,7 +86,6 @@ function isSubagentSession(session) {
   if (session.header?.parentSession || session.parentSession || session.header?.parentSessionId || session.parentSessionId) return true;
   if (typeof session.header?.delegationDepth === 'number' && session.header.delegationDepth > 0) return true;
   if (typeof session.delegationDepth === 'number' && session.delegationDepth > 0) return true;
-  if (session.header?.agentPreset && session.header.agentPreset !== 'lead') return true;
   return false;
 }
 
@@ -91,6 +93,7 @@ export function apply(ctx, config = {}) {
   const defaultEnabled = config.defaultEnabled ?? true;
   const budgetTokens = config.budgetTokens ?? 64000;
   const reserveTokens = config.reserveTokens ?? 4096;
+  const retainTailMessages = config.retainTailMessages ?? 4;
   const mirrorFilename = config.mirrorFilename ?? 'LIVE_CONTEXT.md';
 
   const sessionStates = new Map();
@@ -106,11 +109,17 @@ export function apply(ctx, config = {}) {
       const store = MirrorStore.forSession(sessionId, workspaceRoot, mirrorFilename);
       const isEnabled = flagVal !== null ? flagVal : defaultEnabled;
       let initialNotes = '';
+      let revision = 0;
       try {
         // Aislamiento estricto: sólo leer notas iniciales si el archivo privado de ESTA sesión existe
         if (existsSync(store.filePath)) {
           const existingDisk = readFileSync(store.filePath, 'utf8');
           initialNotes = extractNotesFromDocument(existingDisk) || '';
+          const header = parseHeader(existingDisk);
+          const persistedRevision = Number(header?.revision);
+          if (header?.session === sessionId && Number.isSafeInteger(persistedRevision) && persistedRevision >= 0) {
+            revision = persistedRevision;
+          }
         }
       } catch {}
       state = {
@@ -118,8 +127,10 @@ export function apply(ctx, config = {}) {
         workspaceRoot,
         enabled: isEnabled,
         store,
-        revision: 0,
+        revision,
         snapshot: null,
+        pendingDocument: null,
+        pendingSync: null,
         persistentNotes: initialNotes,
         notesDelivered: false,
         lastDeliveredNotesHash: '',
@@ -144,6 +155,7 @@ export function apply(ctx, config = {}) {
     if (!state.enabled) return state;
 
     try {
+      const hadSnapshot = state.snapshot !== null;
       const existingContent = await state.store.read();
       if (existingContent) {
         const diskNotes = extractNotesFromDocument(existingContent);
@@ -151,7 +163,7 @@ export function apply(ctx, config = {}) {
           state.persistentNotes = diskNotes;
         }
       }
-      const derived = typeof session.deriveMessages === 'function' ? session.deriveMessages() : [];
+      const derived = visibleContextMessages(session);
       const seenIds = new Set(derived.map((m) => m?.id).filter(Boolean));
       const uniqueExtras = extraMessages.filter((m) => !m?.id || !seenIds.has(m.id));
       const allMessages = [...derived, ...uniqueExtras];
@@ -160,7 +172,15 @@ export function apply(ctx, config = {}) {
         documentSeed: session.id,
         sessionId: session.id,
         persistentNotes: state.persistentNotes,
+        protectedIndexes: protectedContextIndexes(allMessages, { retainTailMessages }),
       });
+      if (!hadSnapshot && existingContent) {
+        const restored = applyContextDocument(existingContent, state.snapshot);
+        if (restored.changed && restored.reason === 'accepted-edit') {
+          state.pendingDocument = existingContent;
+          return state;
+        }
+      }
       await state.store.write(state.snapshot.text);
     } catch (err) {
       ctx.logger?.warn?.(`[dsh-plugin-clm] Error syncing mirror: ${err instanceof Error ? err.message : String(err)}`);
@@ -279,6 +299,7 @@ export function apply(ctx, config = {}) {
         return buildClmPromptSection(state.store.filePath, {
           budgetTokens,
           reserveTokens,
+          retainTailMessages,
         }).trim();
       },
     });
@@ -513,7 +534,7 @@ export function apply(ctx, config = {}) {
     return undefined;
   });
 
-  // 5. Waterfall nativo agent/pre-step (compatible con invariants de dsh-agent-loop 0.1.7+)
+  // 5. Apply validated mirror edits before DSH 0.2 admits the next model step.
   ctx.on(
     'agent/pre-step',
     async ({ agent, messages, signal }, next) => {
@@ -525,6 +546,7 @@ export function apply(ctx, config = {}) {
       const sessionId = session.id;
       const workspaceRoot = getWorkspaceRoot(session);
       const state = getSessionState(sessionId, workspaceRoot);
+      if (state.pendingSync !== null) await state.pendingSync;
 
       // Detectar activación/desactivación por mensaje directo
       const lastUserMsg = (decision.messages || messages || []).filter((m) => m.role === 'user').slice(-1)[0];
@@ -537,12 +559,18 @@ export function apply(ctx, config = {}) {
 
       if (!state.enabled) return decision;
 
+      let pendingDocument = null;
+      let changedOnDisk = false;
+      let diskContent = null;
+      const previousNotes = state.persistentNotes;
       try {
         const additions = [];
 
         // A. Detectar ediciones externas o del agente sobre el archivo privado o LIVE_CONTEXT.md
-        const changedOnDisk = await state.store.hasChanged();
-        const diskContent = await state.store.read();
+        pendingDocument = state.pendingDocument;
+        state.pendingDocument = null;
+        changedOnDisk = pendingDocument !== null || await state.store.hasChanged();
+        diskContent = pendingDocument ?? await state.store.read();
 
         if (diskContent) {
           const extractedNotes = extractNotesFromDocument(diskContent);
@@ -552,19 +580,27 @@ export function apply(ctx, config = {}) {
 
           if (changedOnDisk && state.snapshot) {
             const applied = applyContextDocument(diskContent, state.snapshot);
-            if (applied.changed) {
+            if (applied.changed && applied.reason === 'accepted-edit') {
+              const projection = applyContextProjection(session, state.snapshot, applied, { retainTailMessages });
               state.revision++;
               state.editsCount++;
-              if (applied.notes) {
-                state.persistentNotes = applied.notes;
+              state.persistentNotes = applied.notes ?? '';
+              additions.push(...projection.extraMessages);
+              if (!projection.notesAttached && applied.notes !== state.snapshot.persistentNotes) {
+                additions.push(createClmMessage(
+                  applied.notes
+                    ? `[CLM persistent notes updated, revision ${state.revision}]\n${applied.notes}`
+                    : `[CLM persistent notes cleared, revision ${state.revision}]`,
+                  'user',
+                  'context'
+                ));
               }
-              additions.push(
-                createClmMessage(
-                  `[Memoria Viva CLM actualizada en disco (Revisión ${state.revision})]\n${state.persistentNotes || diskContent}`,
-                  'user'
-                )
-              );
+              if (projection.ranges.length > 0) {
+                ctx.logger?.info?.(`[dsh-plugin-clm] Applied ${projection.ranges.length} durable context projection range(s).`);
+              }
               state.notesDelivered = true;
+            } else if (applied.reason) {
+              ctx.logger?.warn?.(`[dsh-plugin-clm] Ignored context mirror edit: ${applied.reason}.`);
             }
           } else if (!state.notesDelivered && state.persistentNotes) {
             // Entregar el bloque de notas vivas al iniciar la conversación
@@ -593,6 +629,8 @@ export function apply(ctx, config = {}) {
           ? { ...decision, messages: finalMessages }
           : decision;
       } catch (err) {
+        if (changedOnDisk && diskContent !== null) state.pendingDocument = diskContent;
+        state.persistentNotes = previousNotes;
         ctx.logger?.warn?.(`[dsh-plugin-clm] Error in agent/pre-step: ${err instanceof Error ? err.message : String(err)}`);
         return decision;
       }
@@ -600,13 +638,32 @@ export function apply(ctx, config = {}) {
     { prepend: true }
   );
 
-  // 6. Actualizar el espejo en disco al finalizar cada paso o turno para que siempre refleje la última respuesta
-  ctx.on('session/event', (session, event) => {
+  // 6. Refresh only at turn boundaries. A tool may edit the mirror inside a
+  // step; rewriting it at step/end would erase that CLM edit before the next
+  // agent/pre-step can validate and apply it.
+  ctx.on('session/event', async (session, event) => {
     if (!session || isSubagentSession(session)) return;
-    if (event?.type === 'step/end' || event?.type === 'turn/end') {
+    if (event?.type === 'turn/end') {
       const state = getSessionState(session.id, getWorkspaceRoot(session));
       if (state.enabled) {
-        syncMirrorForSession(session).catch(() => {});
+        if (state.pendingDocument !== null) return;
+        if (state.pendingSync !== null) return state.pendingSync;
+        state.pendingSync = (async () => {
+          try {
+            const changed = await state.store.hasChanged();
+            if (changed) {
+              state.pendingDocument = await state.store.read();
+              return;
+            }
+            await syncMirrorForSession(session);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            ctx.logger?.warn?.(`[dsh-plugin-clm] Could not check edited mirror before syncing: ${message}`);
+          } finally {
+            state.pendingSync = null;
+          }
+        })();
+        return state.pendingSync;
       }
     }
   });

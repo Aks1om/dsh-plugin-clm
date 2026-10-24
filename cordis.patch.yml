@@ -5,4 +5,5 @@
         defaultEnabled: true
         budgetTokens: 64000
         reserveTokens: 4096
+        retainTailMessages: 4
         mirrorFilename: "LIVE_CONTEXT.md"

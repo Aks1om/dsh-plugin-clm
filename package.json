@@ -1,11 +1,14 @@
 {
   "name": "dsh-plugin-clm",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Context Language Models (CLM) for DeepSeek Harness: Active editable context window mirrored to disk for pruning and token optimization with multi-session isolation.",
   "type": "module",
+  "engines": {
+    "dsh": ">=0.2.1-rc.2 <0.2.2"
+  },
   "main": "./index.js",
   "scripts": {
-    "test": "node test/isolation.test.mjs"
+    "test": "node test/isolation.test.mjs && node --test test/context-projection.test.mjs"
   },
   "exports": {
     ".": "./index.js",
@@ -42,10 +45,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/maxeone/dsh-plugin-clm.git"
+    "url": "git+https://github.com/Aks1om/dsh-plugin-clm.git"
   },
   "bugs": {
-    "url": "https://github.com/maxeone/dsh-plugin-clm/issues"
+    "url": "https://github.com/Aks1om/dsh-plugin-clm/issues"
   },
-  "homepage": "https://github.com/maxeone/dsh-plugin-clm#readme"
+  "homepage": "https://github.com/Aks1om/dsh-plugin-clm#readme"
 }
