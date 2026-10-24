@@ -25,7 +25,7 @@ Supported runtime: `@deepseek-ai/dsh >=0.2.1-rc.2 <0.2.2`.
 - 🔄 **Real-Time Context Synchronization**: Mirrors the ongoing session context into a structured Markdown document (`.dsh/clm/LIVE_CONTEXT.md`).
 - ✂️ **Active Context Pruning**: Enables the model to compress extensive terminal dumps and tool results into concise summary notes.
 - 🎛️ **Session controls**: `/clm on`, `/clm off`, `/clm status`, `/clm reset`, and the `clm` tool.
-- 🛡️ **Token Overflow Guard**: Automatically enforces context budgets (`budgetTokens: 64000`, `reserveTokens: 4096`) to prevent sudden context overruns.
+- 🛡️ **Model-aware budget**: Targets 75% of the active model's advertised context window, reserving up to 4,096 tokens. Configure `contextWindowFraction` from `0.25` to `0.9`; if DSH cannot resolve a model capacity yet, CLM falls back to a 64,000-token budget.
 - ⚡ **Per-Session State Persistence**: Remembers enabled/disabled state across app reloads and per conversation.
 
 ---

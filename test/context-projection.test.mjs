@@ -6,6 +6,7 @@ import test from 'node:test'
 import { apply } from '../index.js'
 import { renderContextDocument, applyContextDocument, createClmMessage } from '../lib/context-document.js'
 import { protectedContextIndexes, visibleContextMessages } from '../lib/context-projection.js'
+import { normalizeContextWindowFraction, resolveContextBudget } from '../lib/context-budget.js'
 import { MirrorStore } from '../lib/mirror-store.js'
 
 function message(role, id, text, source = { kind: role }) {
@@ -164,4 +165,34 @@ test('CLM context notes stay mirrored so protected-tail indexes match the visibl
   assert.equal(snapshot.blocks[0].protected, false)
   assert.equal(snapshot.blocks[1].protected, false)
   assert.equal(snapshot.blocks[2].protected, true)
+})
+
+test('CLM budget follows the active model context window and falls back when unknown', () => {
+  const modelBudget = resolveContextBudget({
+    contextWindow: 272_000,
+    contextWindowFraction: 0.75,
+    reserveTokens: 4_096,
+    fallbackBudgetTokens: 64_000,
+  })
+  assert.deepEqual(modelBudget, {
+    source: 'model',
+    contextWindow: 272_000,
+    contextWindowFraction: 0.75,
+    budgetLimitTokens: 204_000,
+    targetBudgetTokens: 208_096,
+    reserveTokens: 4_096,
+  })
+
+  const fallback = resolveContextBudget({
+    fallbackBudgetTokens: 64_000,
+    reserveTokens: 4_096,
+    contextWindowFraction: 0.75,
+  })
+  assert.equal(fallback.source, 'fallback')
+  assert.equal(fallback.budgetLimitTokens, 59_904)
+  const narrowWindow = resolveContextBudget({ contextWindow: 2_048, contextWindowFraction: 0.75, reserveTokens: 4_096 })
+  assert.equal(narrowWindow.budgetLimitTokens, 1_536)
+  assert.equal(narrowWindow.reserveTokens, 512)
+  assert.equal(narrowWindow.targetBudgetTokens, 2_048)
+  assert.equal(normalizeContextWindowFraction(1), 0.75)
 })

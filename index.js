@@ -11,6 +11,7 @@ import {
 } from './lib/context-document.js';
 import { applyContextProjection, protectedContextIndexes, visibleContextMessages } from './lib/context-projection.js';
 import { estimateTotalTokens, estimateMessageTokens } from './lib/overflow-guard.js';
+import { normalizeContextWindowFraction, resolveContextBudget } from './lib/context-budget.js';
 import { buildClmPromptSection } from './lib/steering-prompt.js';
 
 export const name = 'dsh-plugin-clm';
@@ -26,6 +27,7 @@ export const Config = {
           defaultEnabled: typeof raw.defaultEnabled === 'boolean' ? raw.defaultEnabled : true,
           budgetTokens: typeof raw.budgetTokens === 'number' && raw.budgetTokens > 0 ? raw.budgetTokens : 64000,
           reserveTokens: typeof raw.reserveTokens === 'number' && raw.reserveTokens >= 0 ? raw.reserveTokens : 4096,
+          contextWindowFraction: normalizeContextWindowFraction(raw.contextWindowFraction),
           retainTailMessages: Number.isSafeInteger(raw.retainTailMessages) && raw.retainTailMessages >= 1 ? raw.retainTailMessages : 4,
           mirrorFilename: typeof raw.mirrorFilename === 'string' && raw.mirrorFilename.trim() ? raw.mirrorFilename.trim() : 'LIVE_CONTEXT.md',
         },
@@ -93,10 +95,77 @@ export function apply(ctx, config = {}) {
   const defaultEnabled = config.defaultEnabled ?? true;
   const budgetTokens = config.budgetTokens ?? 64000;
   const reserveTokens = config.reserveTokens ?? 4096;
+  const contextWindowFraction = normalizeContextWindowFraction(config.contextWindowFraction);
   const retainTailMessages = config.retainTailMessages ?? 4;
   const mirrorFilename = config.mirrorFilename ?? 'LIVE_CONTEXT.md';
 
   const sessionStates = new Map();
+  const contextWindowCache = new Map();
+
+  function updateBudgetForContextWindow(state, contextWindow) {
+    state.contextBudget = resolveContextBudget({
+      contextWindow,
+      fallbackBudgetTokens: budgetTokens,
+      reserveTokens,
+      contextWindowFraction,
+    });
+  }
+
+  function updateBudgetFromRequestContext(session, state) {
+    const requestContext = session?.requestContext?.();
+    const requestHeader = session?.requestHeader?.();
+    const headerConfig = requestHeader?.config;
+    const headerRouteKnown = typeof headerConfig?.provider === 'string' && typeof headerConfig?.model === 'string';
+    const contextRouteMatches = requestContext !== undefined
+      && (!headerRouteKnown || (requestContext.provider === headerConfig.provider && requestContext.model === headerConfig.model));
+    if (contextRouteMatches && Number.isSafeInteger(requestContext.contextWindow) && requestContext.contextWindow > 0) {
+      updateBudgetForContextWindow(state, requestContext.contextWindow);
+      state.modelRoute = `${requestContext.provider}/${requestContext.model}`;
+      return true;
+    }
+    return false;
+  }
+
+  async function refreshContextBudget(session, state, signal) {
+    if (updateBudgetFromRequestContext(session, state)) return state.contextBudget;
+
+    const headerConfig = session?.requestHeader?.()?.config;
+    const requestContext = session?.requestContext?.();
+    const provider = headerConfig?.provider ?? requestContext?.provider;
+    const model = headerConfig?.model ?? requestContext?.model;
+    const route = typeof provider === 'string' && typeof model === 'string' ? `${provider}/${model}` : undefined;
+    if (route === undefined || typeof ctx.llm?.resolveModelInfo !== 'function') {
+      updateBudgetForContextWindow(state, undefined);
+      state.modelRoute = route;
+      return state.contextBudget;
+    }
+
+    if (contextWindowCache.has(route)) {
+      updateBudgetForContextWindow(state, contextWindowCache.get(route));
+      state.modelRoute = route;
+      return state.contextBudget;
+    }
+
+    try {
+      const info = await ctx.llm.resolveModelInfo(provider, model, signal);
+      const contextWindow = info?.context?.contextWindow;
+      const valid = Number.isSafeInteger(contextWindow) && contextWindow > 0 ? contextWindow : undefined;
+      if (valid !== undefined) contextWindowCache.set(route, valid);
+      updateBudgetForContextWindow(state, valid);
+    } catch {
+      updateBudgetForContextWindow(state, undefined);
+    }
+    state.modelRoute = route;
+    return state.contextBudget;
+  }
+
+  function contextBudgetLabel(state) {
+    const budget = state.contextBudget;
+    if (budget.source === 'model' && budget.contextWindow !== undefined) {
+      return `~${budget.budgetLimitTokens.toLocaleString()} / ${budget.contextWindow.toLocaleString()} tokens (${Math.round(budget.contextWindowFraction * 100)}% model window)`;
+    }
+    return `~${budget.budgetLimitTokens.toLocaleString()} tokens (fallback budget)`;
+  }
 
   function getWorkspaceRoot(session) {
     return session?.header?.cwd || process.cwd();
@@ -127,6 +196,8 @@ export function apply(ctx, config = {}) {
         workspaceRoot,
         enabled: isEnabled,
         store,
+        contextBudget: resolveContextBudget({ fallbackBudgetTokens: budgetTokens, reserveTokens, contextWindowFraction }),
+        modelRoute: undefined,
         revision,
         snapshot: null,
         pendingDocument: null,
@@ -216,12 +287,12 @@ export function apply(ctx, config = {}) {
   /**
    * Poda en superficie (surface replace) los resultados de herramientas antiguos cuando el contexto supera el presupuesto.
    */
-  function pruneOverBudgetToolResults(session) {
+  function pruneOverBudgetToolResults(session, budgetLimitTokens = Math.max(8192, budgetTokens - reserveTokens)) {
     if (!session || typeof session.deriveMessages !== 'function' || !session.surface?.nodes) {
       return 0;
     }
     const messages = session.deriveMessages();
-    const budgetLimit = Math.max(8192, budgetTokens - reserveTokens);
+    const budgetLimit = budgetLimitTokens;
     let currentTokens = estimateTotalTokens(messages);
     if (currentTokens <= budgetLimit) return 0;
 
@@ -296,9 +367,11 @@ export function apply(ctx, config = {}) {
         const workspaceRoot = getWorkspaceRoot(session);
         const state = getSessionState(sessionId, workspaceRoot);
         if (!state.enabled) return '';
+        updateBudgetFromRequestContext(session, state);
         return buildClmPromptSection(state.store.filePath, {
-          budgetTokens,
-          reserveTokens,
+          budgetTokens: state.contextBudget.targetBudgetTokens,
+          reserveTokens: state.contextBudget.reserveTokens,
+          contextWindowFraction,
           retainTailMessages,
         }).trim();
       },
@@ -355,6 +428,7 @@ export function apply(ctx, config = {}) {
         const sessionId = session?.id || 'default';
         const workspaceRoot = session ? getWorkspaceRoot(session) : process.cwd();
         const state = getSessionState(sessionId, workspaceRoot);
+        if (session) await refreshContextBudget(session, state, toolCtx?.signal);
 
         switch (action) {
           case 'enable': {
@@ -425,7 +499,7 @@ export function apply(ctx, config = {}) {
               revision: state.revision,
               notesLength: state.persistentNotes?.length || 0,
               message: state.enabled
-                ? `✅ CLM ACTIVO en sesión ${sessionId} [Rev. ${state.revision} | ${state.editsCount} edits | ~${tokens} tokens]\nArchivo privado: ${state.store.filePath}\nVista activa global: ${state.store.globalPath || state.store.filePath}`
+                ? `✅ CLM ACTIVO en sesión ${sessionId} [Rev. ${state.revision} | ${state.editsCount} edits | ~${tokens} used / ${contextBudgetLabel(state)}]\nArchivo privado: ${state.store.filePath}\nVista activa global: ${state.store.globalPath || state.store.filePath}`
                 : '⛔ CLM INACTIVO en esta conversación (usa action: "enable" o /clm on para encenderlo).',
             };
           }
@@ -453,6 +527,7 @@ export function apply(ctx, config = {}) {
         const sessionId = session?.id || 'default';
         const workspaceRoot = session ? getWorkspaceRoot(session) : process.cwd();
         const state = getSessionState(sessionId, workspaceRoot);
+        if (session) await refreshContextBudget(session, state);
         const arg = (rawInput || '').trim().toLowerCase();
 
         if (arg === 'on' || arg === 'enable') {
@@ -508,7 +583,7 @@ export function apply(ctx, config = {}) {
         return {
           kind: 'success',
           text: state.enabled
-            ? `🧠 [CLM ACTIVO] Sesión: ${sessionId} | Rev. ${state.revision} | Ediciones aplicadas: ${state.editsCount} | ~${tokens} / ${budgetTokens} tokens.\nArchivo privado: ${state.store.filePath}\nVista global: ${state.store.globalPath || state.store.filePath}`
+            ? `🧠 [CLM ACTIVO] Sesión: ${sessionId} | Rev. ${state.revision} | Ediciones aplicadas: ${state.editsCount} | ~${tokens} used / ${contextBudgetLabel(state)}.\nArchivo privado: ${state.store.filePath}\nVista global: ${state.store.globalPath || state.store.filePath}`
             : '⛔ [CLM INACTIVO] Usa /clm on o el botón CLM de la barra para activarlo.',
         };
       },
@@ -528,6 +603,7 @@ export function apply(ctx, config = {}) {
       const session = agent.session;
       const state = getSessionState(session.id, getWorkspaceRoot(session));
       if (state.enabled) {
+        await refreshContextBudget(session, state);
         await syncMirrorForSession(session);
       }
     } catch {}
@@ -547,6 +623,7 @@ export function apply(ctx, config = {}) {
       const workspaceRoot = getWorkspaceRoot(session);
       const state = getSessionState(sessionId, workspaceRoot);
       if (state.pendingSync !== null) await state.pendingSync;
+      await refreshContextBudget(session, state, signal);
 
       // Detectar activación/desactivación por mensaje directo
       const lastUserMsg = (decision.messages || messages || []).filter((m) => m.role === 'user').slice(-1)[0];
@@ -615,7 +692,7 @@ export function apply(ctx, config = {}) {
         }
 
         // B. Ejecutar Overflow Guard sobre nodos tool/result de la superficie si superan el presupuesto
-        const prunedNodes = pruneOverBudgetToolResults(session);
+        const prunedNodes = pruneOverBudgetToolResults(session, state.contextBudget.budgetLimitTokens);
         if (prunedNodes > 0) {
           state.revision++;
         }
