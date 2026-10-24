@@ -159,6 +159,8 @@ test('CLM context notes stay mirrored so protected-tail indexes match the visibl
     protectedIndexes: protectedContextIndexes(messages, { retainTailMessages: 1 }),
   })
   assert.deepEqual(snapshot.blocks.map((block) => block.sourceSeq), [1, 2, 3])
+  assert.equal(messages[1].source.kind, 'user')
+  assert.match(messages[1].id, /^clm-context-/u)
   assert.equal(snapshot.blocks[0].protected, false)
   assert.equal(snapshot.blocks[1].protected, false)
   assert.equal(snapshot.blocks[2].protected, true)
