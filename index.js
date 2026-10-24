@@ -13,6 +13,7 @@ import { applyContextProjection, protectedContextIndexes, visibleContextMessages
 import { estimateTotalTokens, estimateMessageTokens } from './lib/overflow-guard.js';
 import { normalizeContextWindowFraction, resolveContextBudget } from './lib/context-budget.js';
 import { buildClmPromptSection } from './lib/steering-prompt.js';
+import { estimateSessionTokens } from './lib/calibrated-estimator.js';
 
 export const name = 'dsh-plugin-clm';
 
@@ -101,6 +102,35 @@ export function apply(ctx, config = {}) {
 
   const sessionStates = new Map();
   const contextWindowCache = new Map();
+  let tokenMeter;
+  let calibrationPath;
+  try {
+    tokenMeter = ctx.get?.('tokenMeter');
+    const profileDir = ctx.get?.('profileContext')?.dir;
+    if (typeof profileDir === 'string' && profileDir.length > 0) {
+      calibrationPath = join(profileDir, 'context-trim-calibration.json');
+    }
+  } catch {
+    // Injected services may not be ready yet; the local estimator remains available.
+  }
+
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['tokenMeter', 'profileContext'], (meterCtx) => {
+      tokenMeter = meterCtx?.tokenMeter ?? tokenMeter;
+      const profileDir = meterCtx?.profileContext?.dir;
+      if (typeof profileDir === 'string' && profileDir.length > 0) {
+        calibrationPath = join(profileDir, 'context-trim-calibration.json');
+      }
+    });
+  }
+
+  function estimateSessionContextTokens(session, messages) {
+    return estimateSessionTokens(session, {
+      tokenMeter,
+      calibrationPath,
+      fallbackEstimate: () => estimateTotalTokens(messages ?? []),
+    });
+  }
 
   function updateBudgetForContextWindow(state, contextWindow) {
     state.contextBudget = resolveContextBudget({
@@ -287,13 +317,13 @@ export function apply(ctx, config = {}) {
   /**
    * Poda en superficie (surface replace) los resultados de herramientas antiguos cuando el contexto supera el presupuesto.
    */
-  function pruneOverBudgetToolResults(session, budgetLimitTokens = Math.max(8192, budgetTokens - reserveTokens)) {
+  async function pruneOverBudgetToolResults(session, budgetLimitTokens = Math.max(8192, budgetTokens - reserveTokens)) {
     if (!session || typeof session.deriveMessages !== 'function' || !session.surface?.nodes) {
       return 0;
     }
     const messages = session.deriveMessages();
     const budgetLimit = budgetLimitTokens;
-    let currentTokens = estimateTotalTokens(messages);
+    let currentTokens = await estimateSessionContextTokens(session, messages);
     if (currentTokens <= budgetLimit) return 0;
 
     let prunedCount = 0;
@@ -341,8 +371,7 @@ export function apply(ctx, config = {}) {
             sourceEventSeqs: [seq],
           }
         );
-        const afterTokens = estimateMessageTokens(replacementMessage);
-        currentTokens -= Math.max(0, originalTokens - afterTokens);
+        currentTokens = await estimateSessionContextTokens(session, session.deriveMessages());
         prunedCount++;
       } catch {
         // Si un nodo no puede reemplazarse, continuar con el siguiente
@@ -489,7 +518,7 @@ export function apply(ctx, config = {}) {
           case 'status':
           default: {
             const derived = typeof session?.deriveMessages === 'function' ? session.deriveMessages() : [];
-            const tokens = estimateTotalTokens(derived);
+            const tokens = await estimateSessionContextTokens(session, derived);
             return {
               status: state.enabled ? 'enabled' : 'disabled',
               enabled: state.enabled,
@@ -579,7 +608,7 @@ export function apply(ctx, config = {}) {
         }
 
         const derived = typeof session?.deriveMessages === 'function' ? session.deriveMessages() : [];
-        const tokens = estimateTotalTokens(derived);
+        const tokens = await estimateSessionContextTokens(session, derived);
         return {
           kind: 'success',
           text: state.enabled
@@ -692,7 +721,7 @@ export function apply(ctx, config = {}) {
         }
 
         // B. Ejecutar Overflow Guard sobre nodos tool/result de la superficie si superan el presupuesto
-        const prunedNodes = pruneOverBudgetToolResults(session, state.contextBudget.budgetLimitTokens);
+        const prunedNodes = await pruneOverBudgetToolResults(session, state.contextBudget.budgetLimitTokens);
         if (prunedNodes > 0) {
           state.revision++;
         }

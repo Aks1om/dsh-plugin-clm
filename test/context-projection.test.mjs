@@ -170,29 +170,29 @@ test('CLM context notes stay mirrored so protected-tail indexes match the visibl
 test('CLM budget follows the active model context window and falls back when unknown', () => {
   const modelBudget = resolveContextBudget({
     contextWindow: 272_000,
-    contextWindowFraction: 0.75,
+    contextWindowFraction: 0.7,
     reserveTokens: 4_096,
     fallbackBudgetTokens: 64_000,
   })
   assert.deepEqual(modelBudget, {
     source: 'model',
     contextWindow: 272_000,
-    contextWindowFraction: 0.75,
-    budgetLimitTokens: 204_000,
-    targetBudgetTokens: 208_096,
+    contextWindowFraction: 0.7,
+    budgetLimitTokens: 190_400,
+    targetBudgetTokens: 194_496,
     reserveTokens: 4_096,
   })
 
   const fallback = resolveContextBudget({
     fallbackBudgetTokens: 64_000,
     reserveTokens: 4_096,
-    contextWindowFraction: 0.75,
+    contextWindowFraction: 0.7,
   })
   assert.equal(fallback.source, 'fallback')
   assert.equal(fallback.budgetLimitTokens, 59_904)
-  const narrowWindow = resolveContextBudget({ contextWindow: 2_048, contextWindowFraction: 0.75, reserveTokens: 4_096 })
-  assert.equal(narrowWindow.budgetLimitTokens, 1_536)
-  assert.equal(narrowWindow.reserveTokens, 512)
+  const narrowWindow = resolveContextBudget({ contextWindow: 2_048, contextWindowFraction: 0.7, reserveTokens: 4_096 })
+  assert.equal(narrowWindow.budgetLimitTokens, 1_433)
+  assert.equal(narrowWindow.reserveTokens, 615)
   assert.equal(narrowWindow.targetBudgetTokens, 2_048)
-  assert.equal(normalizeContextWindowFraction(1), 0.75)
+  assert.equal(normalizeContextWindowFraction(1), 0.7)
 })

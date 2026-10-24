@@ -8,7 +8,7 @@
   },
   "main": "./index.js",
   "scripts": {
-    "test": "node test/isolation.test.mjs && node --test test/context-projection.test.mjs"
+    "test": "node test/isolation.test.mjs && node --test test/calibrated-estimator.test.mjs test/context-projection.test.mjs"
   },
   "exports": {
     ".": "./index.js",
